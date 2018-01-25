@@ -170,7 +170,7 @@ func (d *Driver) Leader() string {
 // error if this server is not the leader.
 func (d *Driver) Servers() ([]string, error) {
 	if d.raft.State() != raft.Leader {
-		return nil, notLeaderError{}
+		return nil, driverNotLeaderError{}
 	}
 
 	future := d.raft.GetConfiguration()
@@ -227,7 +227,7 @@ type Conn struct {
 }
 
 func (c *Conn) barrier() error {
-	if c.raft.State() != raftLeader {
+	if c.raft.State() != raft.Leader {
 		return sqlite3.Error{
 			Code:         sqlite3.ErrIoErr,
 			ExtendedCode: sqlite3.ErrIoErrNotLeader,
@@ -241,7 +241,7 @@ func (c *Conn) barrier() error {
 	}
 	timeout := time.Minute // TODO: make this configurable
 	if err := c.raft.Barrier(timeout).Error(); err != nil {
-		if err == raftErrLeadershipLost {
+		if err == raft.ErrLeadershipLost {
 			return sqlite3.Error{
 				Code:         sqlite3.ErrIoErr,
 				ExtendedCode: sqlite3.ErrIoErrNotLeader,
@@ -273,7 +273,7 @@ func (c *Conn) barrier() error {
 }
 
 func (c *Conn) checkpoint() error {
-	if c.raft.State() != raftLeader {
+	if c.raft.State() != raft.Leader {
 		return sqlite3.Error{
 			Code:         sqlite3.ErrIoErr,
 			ExtendedCode: sqlite3.ErrIoErrNotLeader,
@@ -467,10 +467,19 @@ func (s *Stmt) Query(args []driver.Value) (driver.Rows, error) {
 	return s.sqliteStmt.Query(args)
 }
 
-// A function used to make sure that our FSM is up-to-date with the latest Raft
-// index.
-type barrier func() error
+// Wrapper around raft.ErrNotLeader implemening the grpcsql/cluster.Error
+// interface.
+type driverNotLeaderError struct {
+}
 
-const raftLeader = raft.Leader
+// NotLeader returns true if the error is due to the server not being the
+// leader.
+func (e driverNotLeaderError) Error() string {
+	return raft.ErrNotLeader.Error()
+}
 
-var raftErrLeadershipLost = raft.ErrLeadershipLost
+// NotLeader returns true if the error is due to the server not being the
+// leader.
+func (e driverNotLeaderError) NotLeader() bool {
+	return true
+}

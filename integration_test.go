@@ -22,16 +22,12 @@ import (
 	"database/sql"
 	"database/sql/driver"
 	"fmt"
-	"io/ioutil"
-	"os"
-	"path/filepath"
 	"strconv"
 	"testing"
 
 	"github.com/CanonicalLtd/dqlite"
 	"github.com/CanonicalLtd/raft-test"
 	"github.com/hashicorp/raft"
-	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -79,15 +75,11 @@ func newDBs(t *testing.T, driverFactory func(int) driver.Driver) ([]*sql.DB, fun
 }
 
 func newDrivers(t *testing.T) ([]driver.Driver, map[raft.ServerID]*raft.Raft, func()) {
-	// Temporary dqlite data dir.
-	dir, err := ioutil.TempDir("", "dqlite-integration-test-")
-	assert.NoError(t, err)
-
 	// Create the dqlite Registries and FSMs.
 	registries := make([]*dqlite.Registry, 3)
 	fsms := make([]raft.FSM, 3)
 	for i := range fsms {
-		registries[i] = dqlite.NewRegistry(filepath.Join(dir, strconv.Itoa(i)))
+		registries[i] = dqlite.NewRegistry(i)
 		fsms[i] = dqlite.NewFSM(registries[i])
 	}
 
@@ -107,12 +99,6 @@ func newDrivers(t *testing.T) ([]driver.Driver, map[raft.ServerID]*raft.Raft, fu
 
 	cleanup := func() {
 		control.Close()
-		_, err := os.Stat(dir)
-		if err != nil {
-			assert.True(t, os.IsNotExist(err))
-		} else {
-			assert.NoError(t, os.RemoveAll(dir))
-		}
 	}
 
 	return drivers, rafts, cleanup

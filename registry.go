@@ -1,8 +1,6 @@
 package dqlite
 
 import (
-	"math/rand"
-
 	"github.com/CanonicalLtd/dqlite/internal/registry"
 )
 
@@ -11,10 +9,10 @@ type Registry registry.Registry
 
 // NewRegistry creates a new Registry, which is expected to be passed to both
 // NewFSM and NewDriver.
-func NewRegistry(dir string) *Registry {
+func NewRegistry(id int) *Registry {
 	// Create a random ID for the volatile file system, mainly to avoid
 	// collisions in unit tests.
-	id := rand.Int()
+	//id := rand.Int()
 
 	return (*Registry)(registry.New(id))
 }

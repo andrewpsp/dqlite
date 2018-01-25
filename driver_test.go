@@ -62,7 +62,7 @@ func aTestNewDriver_DirErrors(t *testing.T) {
 	}
 	for _, c := range cases {
 		subtest.Run(t, c.title, func(t *testing.T) {
-			registry := dqlite.NewRegistry(c.dir)
+			registry := dqlite.NewRegistry(0)
 			driver, err := dqlite.NewDriver(registry, nil, dqlite.DriverConfig{})
 			assert.Nil(t, driver)
 			require.Error(t, err)
@@ -76,7 +76,7 @@ func TestNewDriver_CreateDir(t *testing.T) {
 	defer cleanup()
 
 	dir = filepath.Join(dir, "does", "not", "exist")
-	registry := dqlite.NewRegistry(dir)
+	registry := dqlite.NewRegistry(0)
 	_, err := dqlite.NewDriver(registry, &raft.Raft{}, dqlite.DriverConfig{})
 	assert.NoError(t, err)
 }
@@ -116,10 +116,7 @@ func TestDriver_OpenInvalidURI(t *testing.T) {
 }
 
 func TestDriver_OpenError(t *testing.T) {
-	dir, cleanup := newDir(t)
-	defer cleanup()
-
-	registry := dqlite.NewRegistry(dir)
+	registry := dqlite.NewRegistry(0)
 	fsm := dqlite.NewFSM(registry)
 	raft, cleanup := rafttest.Server(t, fsm)
 	defer cleanup()
@@ -127,7 +124,6 @@ func TestDriver_OpenError(t *testing.T) {
 
 	driver, err := dqlite.NewDriver(registry, raft, config)
 	require.NoError(t, err)
-	require.NoError(t, os.RemoveAll(dir))
 
 	conn, err := driver.Open("test.db?mode=ro")
 	assert.Nil(t, conn)
@@ -168,11 +164,8 @@ func TestDriver_NotLeader_Errors(t *testing.T) {
 
 	for _, c := range cases {
 		t.Run(c.title, func(t *testing.T) {
-			dir, cleanup := newDir(t)
-			defer cleanup()
-
-			registry1 := dqlite.NewRegistry(dir)
-			registry2 := dqlite.NewRegistry(dir)
+			registry1 := dqlite.NewRegistry(1)
+			registry2 := dqlite.NewRegistry(2)
 			fsm1 := dqlite.NewFSM(registry1)
 			fsm2 := dqlite.NewFSM(registry2)
 			rafts, control := rafttest.Cluster(t, []raft.FSM{fsm1, fsm2}, rafttest.Latency(1000.0))
@@ -287,19 +280,12 @@ func newDriver(t *testing.T) (*dqlite.Driver, func()) {
 
 // Create a new test dqlite.Driver with custom configuration.
 func newDriverWithConfig(t *testing.T, config dqlite.DriverConfig) (*dqlite.Driver, func()) {
-	dir, dirCleanup := newDir(t)
-
-	registry := dqlite.NewRegistry(dir)
+	registry := dqlite.NewRegistry(1)
 	fsm := dqlite.NewFSM(registry)
-	raft, raftCleanup := rafttest.Server(t, fsm)
+	raft, cleanup := rafttest.Server(t, fsm)
 
 	driver, err := dqlite.NewDriver(registry, raft, config)
 	require.NoError(t, err)
-
-	cleanup := func() {
-		raftCleanup()
-		dirCleanup()
-	}
 
 	return driver, cleanup
 }
