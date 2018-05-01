@@ -170,8 +170,7 @@ func (d *Driver) Leader() string {
 // error if this server is not the leader.
 func (d *Driver) Servers() ([]string, error) {
 	if d.raft.State() != raft.Leader {
-		// TODO: convert this to grpcsql/cluster.ErrDriverNotLeader
-		return nil, raft.ErrNotLeader
+		return nil, notLeaderError{}
 	}
 
 	future := d.raft.GetConfiguration()
