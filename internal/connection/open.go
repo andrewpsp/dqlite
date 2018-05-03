@@ -70,5 +70,10 @@ func open(dsn string) (*sqlite3.SQLiteConn, error) {
 		return nil, err
 	}
 
+	// We don't need to sync to disk.
+	if _, err := sqliteConn.Exec("PRAGMA synchronous=0", nil); err != nil {
+		return nil, err
+	}
+
 	return sqliteConn, nil
 }
