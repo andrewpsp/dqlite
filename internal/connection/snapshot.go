@@ -1,40 +1,38 @@
 package connection
 
 import (
+	"crypto/rand"
 	"fmt"
-	"io/ioutil"
-	"os"
-	"path/filepath"
 
+	"github.com/CanonicalLtd/go-sqlite3"
 	"github.com/pkg/errors"
 )
 
-// Snapshot returns a snapshot of the SQLite database with the given path.
+// Snapshot returns a snapshot of the SQLite database with the given path in
+// volatile file system.
 //
 // The snapshot is comprised of two byte slices, one with the content of the
 // database and one is the content of the WAL file.
-func Snapshot(path string) ([]byte, []byte, error) {
+func Snapshot(fs *sqlite3.VolatileFileSystem, path string) ([]byte, []byte, error) {
 	// Create a source connection that will read the database snapshot.
-	sourceConn, err := open(path)
+	sourceURI := EncodeURI(path, fs.Name(), "")
+	sourceConn, err := open(sourceURI)
 	if err != nil {
 		return nil, nil, errors.Wrap(err, "source connection")
 	}
 	defer sourceConn.Close()
 
 	// Create a backup connection that will write the database snapshot.
-	backupPath, err := newBackupPath(path)
-	if err != nil {
-		return nil, nil, errors.Wrap(err, "failed to create temp file for backup")
-	}
-	defer os.Remove(backupPath)
-	backupConn, err := open(backupPath)
+	backupPath := newBackupPath(path)
+	backupURI := EncodeURI(backupPath, fs.Name(), "")
+	backupConn, err := open(backupURI)
 	if err != nil {
 		return nil, nil, errors.Wrap(err, "failed to open backup connection")
 	}
+	defer fs.Remove(backupPath)
 
-	// Cleanup the shm and wal files of the backup as well.
-	defer os.Remove(backupPath + "-wal")
-	defer os.Remove(backupPath + "-shm")
+	// Cleanup the wal file of the backup as well.
+	defer fs.Remove(backupPath + "-wal")
 	defer backupConn.Close()
 
 	// Perform the backup.
@@ -52,12 +50,12 @@ func Snapshot(path string) ([]byte, []byte, error) {
 	}
 
 	// Read the backup database and WAL.
-	database, err := ioutil.ReadFile(backupPath)
+	database, err := fs.ReadFile(backupPath)
 	if err != nil {
 		return nil, nil, errors.Wrapf(err, "cannot read backup content at %s", backupPath)
 	}
 
-	wal, err := ioutil.ReadFile(backupPath + "-wal")
+	wal, err := fs.ReadFile(backupPath + "-wal")
 	if err != nil {
 		return nil, nil, err
 	}
@@ -66,24 +64,20 @@ func Snapshot(path string) ([]byte, []byte, error) {
 }
 
 // Restore the given database and WAL backups, writing them at the given
-// database path.
-func Restore(path string, database []byte, wal []byte) error {
-	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+// database path in a volatile file system.
+func Restore(fs *sqlite3.VolatileFileSystem, path string, database []byte, wal []byte) error {
+	if err := fs.Remove(path); err != nil && !isDeleteNoEntErr(err) {
 		return errors.Wrap(err, "failed to remove current database")
 	}
-	if err := ioutil.WriteFile(path, database, 0600); err != nil {
+	if err := fs.CreateFile(path, database); err != nil {
 		return errors.Wrapf(err, "failed to write database content at %s", path)
 	}
 
-	if err := os.Remove(path + "-wal"); err != nil && !os.IsNotExist(err) {
+	if err := fs.Remove(path + "-wal"); err != nil && !isDeleteNoEntErr(err) {
 		return errors.Wrap(err, "failed to remove current WAL")
 	}
-	if err := ioutil.WriteFile(path+"-wal", wal, 0600); err != nil {
+	if err := fs.CreateFile(path+"-wal", wal); err != nil {
 		return errors.Wrapf(err, "failed to write wal content at %s", path)
-	}
-
-	if err := os.Remove(path + "-shm"); err != nil && !os.IsNotExist(err) {
-		return errors.Wrap(err, "failed to remove current shm file")
 	}
 
 	return nil
@@ -94,13 +88,16 @@ func Restore(path string, database []byte, wal []byte) error {
 //
 // The temporary file lives in the same directory as the database being
 // snapshotted and its named after its filename.
-func newBackupPath(path string) (string, error) {
-	// Create a temporary file using the source DSN filename as prefix.
-	file, err := ioutil.TempFile(filepath.Dir(path), filepath.Base(path)+"-")
-	if err != nil {
-		return "", err
-	}
-	defer file.Close()
+func newBackupPath(path string) string {
+	b := make([]byte, 8)
+	rand.Read(b)
+	return fmt.Sprintf("%s-%x-%x-%x", path, b[0:4], b[4:6], b[6:8])
+}
 
-	return file.Name(), nil
+func isDeleteNoEntErr(err error) bool {
+	sqliteErr, ok := err.(sqlite3.Error)
+	if !ok {
+		return false
+	}
+	return sqliteErr.ExtendedCode == sqlite3.ErrIoErrDeleteNoent
 }

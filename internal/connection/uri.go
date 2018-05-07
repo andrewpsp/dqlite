@@ -11,7 +11,7 @@ import (
 //
 // Only pure file names without any directory segment are accepted
 // (e.g. "test.db"). Query parameters are always valid except for
-// "mode=memory".
+// "mode=memory" and "vfs".
 //
 // It returns the filename and query parameters.
 func ParseURI(uri string) (string, string, error) {
@@ -26,6 +26,9 @@ func ParseURI(uri string) (string, string, error) {
 		}
 		if params.Get("mode") == "memory" {
 			return "", "", fmt.Errorf("can't replicate a memory database")
+		}
+		if params.Get("vfs") != "" {
+			return "", "", fmt.Errorf("vfs parameter not supported")
 		}
 		query = params.Encode()
 		filename = filename[:pos]
@@ -46,11 +49,12 @@ func ParseURI(uri string) (string, string, error) {
 	return filename, query, nil
 }
 
-// EncodeURI concatenates the given filename and query string, returning the
+// EncodeURI concatenates the given filename, VFS and query returning the
 // full URI.
-func EncodeURI(filename, query string) string {
+func EncodeURI(filename, vfs, query string) string {
+	uri := fmt.Sprintf("file:%s?vfs=%s", filename, vfs)
 	if query != "" {
-		query = "?" + query
+		uri += "&" + query
 	}
-	return filename + query
+	return uri
 }

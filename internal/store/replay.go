@@ -11,7 +11,7 @@ import (
 // dir as database directory.
 func Replay(logs raft.LogStore, snaps raft.SnapshotStore, r *Range, dir string) error {
 	// Create a registry and a FSM.
-	registry := registry.New(dir)
+	registry := registry.New(-1)
 	fsm := replication.NewFSM(registry)
 
 	// Figure out if we have a snapshot to restore.

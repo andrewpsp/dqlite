@@ -20,8 +20,6 @@ import (
 	"fmt"
 	"io/ioutil"
 	"log"
-	"os"
-	"path/filepath"
 	"sync"
 	"time"
 
@@ -63,9 +61,9 @@ type DriverConfig struct {
 // raft instance.
 func NewDriver(r *Registry, raft *raft.Raft, config DriverConfig) (*Driver, error) {
 	registry := (*registry.Registry)(r)
-	if err := ensureDir(registry.Dir()); err != nil {
-		return nil, err
-	}
+	// if err := ensureDir(registry.Dir()); err != nil {
+	// 	return nil, err
+	// }
 
 	if config.Logger == nil {
 		config.Logger = log.New(ioutil.Discard, "", 0)
@@ -100,6 +98,12 @@ func NewDriver(r *Registry, raft *raft.Raft, config DriverConfig) (*Driver, erro
 	return driver, nil
 }
 
+// FS returns the underlying volatile file system where replicated SQLite files
+// are stored.
+func (d *Driver) FS() *sqlite3.VolatileFileSystem {
+	return d.registry.FS()
+}
+
 // Open starts a new connection to a SQLite database.
 //
 // The given name must be a pure file name without any directory segment,
@@ -119,7 +123,7 @@ func (d *Driver) Open(uri string) (driver.Conn, error) {
 	d.registry.Lock()
 	defer d.registry.Unlock()
 
-	uri = filepath.Join(d.registry.Dir(), connection.EncodeURI(filename, query))
+	uri = connection.EncodeURI(filename, d.registry.FS().Name(), query)
 	sqliteConn, err := connection.OpenLeader(uri, d.methods)
 	if err != nil {
 		return nil, err
@@ -281,14 +285,15 @@ func (c *Conn) checkpoint() error {
 	defer c.driver.mu.Unlock()
 
 	// Read the current size of the WAL.
-	stat, err := os.Stat(filepath.Join(c.driver.registry.Dir(), c.filename+"-wal"))
+	fs := c.driver.registry.FS()
+	size, err := fs.FileSize(c.filename + "-wal")
 	if err != nil {
 		return nil
 	}
 
 	c.driver.registry.Lock()
 	c.driver.registry.FramesReset()
-	c.driver.registry.FramesIncrease(uint64(stat.Size()) / 4096) // TODO: frame size should not be hard-coded
+	c.driver.registry.FramesIncrease(uint64(size) / 4096) // TODO: frame size should not be hard-coded
 	frames := c.driver.registry.Frames()
 	c.driver.registry.Unlock()
 

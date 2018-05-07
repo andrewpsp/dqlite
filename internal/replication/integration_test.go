@@ -18,7 +18,6 @@ import (
 	"database/sql/driver"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"path/filepath"
 	"strconv"
 	"testing"
@@ -1400,21 +1399,14 @@ func TestIntegration_Snapshot(t *testing.T) {
 	// The follower will now have to restore the snapshot.
 	control.Barrier()
 
-	// Figure out the database name
-	rows, err := conn.Query("SELECT file FROM pragma_database_list WHERE name='main'", nil)
-	require.NoError(t, err)
-	values := make([]driver.Value, 1)
-	require.NoError(t, rows.Next(values))
-	require.NoError(t, rows.Close())
-	path := string(values[0].([]byte))
-
 	// Open a new connection since the database file has been replaced.
 	methods := sqlite3.NoopReplicationMethods()
-	conn, err = connection.OpenLeader(path, methods)
-	rows, err = conn.Query("SELECT n FROM test", nil)
+	uri := connection.EncodeURI("test.db", "volatile-1", "")
+	conn, err = connection.OpenLeader(uri, methods)
+	rows, err := conn.Query("SELECT n FROM test", nil)
 	require.NoError(t, err)
 	defer rows.Close()
-	values = make([]driver.Value, 1)
+	values := make([]driver.Value, 1)
 	require.NoError(t, rows.Next(values))
 	assert.Equal(t, int64(1), values[0].(int64))
 	require.NoError(t, rows.Next(values))
@@ -1691,11 +1683,13 @@ func newCluster(t *testing.T, opts ...clusterOption) (clusterConns, *rafttest.Co
 		dir, cleanup := newDir(t)
 		cleanups = append(cleanups, cleanup)
 
-		registries[i] = registry.New(dir)
+		registries[i] = registry.New(i)
 		registries[i].Testing(t, i)
 
 		dirs[i] = dir
 		fsms[i] = replication.NewFSM(registries[i])
+
+		cleanups = append(cleanups, registries[i].Close)
 	}
 
 	// Use an actual boltdb store, so the Log.Data bytes will be copied
@@ -1703,16 +1697,20 @@ func newCluster(t *testing.T, opts ...clusterOption) (clusterConns, *rafttest.Co
 	// Registry.HookSync mechanism to work properly.
 	stores := make([]raft.LogStore, 3)
 	for i := range stores {
-		path := filepath.Join(registries[i].Dir(), "bolt.db")
+		path := filepath.Join(dirs[i], "bolt.db")
 		store, err := raftboltdb.NewBoltStore(path)
 		require.NoError(t, err)
 
 		stores[i] = store
+		cleanups = append(cleanups, func() {
+			require.NoError(t, store.Close())
+		})
 	}
 
 	// Raft instances.
 	store := rafttest.LogStore(func(i int) raft.LogStore { return stores[i] })
 	rafts, control := rafttest.Cluster(t, fsms, store, rafttest.DiscardLogger())
+	cleanups = append(cleanups, control.Close)
 
 	// Methods and connections.
 	methods := make([]*replication.Methods, 3)
@@ -1721,19 +1719,24 @@ func newCluster(t *testing.T, opts ...clusterOption) (clusterConns, *rafttest.Co
 		id := raft.ServerID(strconv.Itoa(i))
 		methods[i] = replication.NewMethods(registries[i], rafts[id])
 
-		dir := dirs[i]
 		timeout := rafttest.Duration(100*time.Millisecond).Nanoseconds() / (1000 * 1000)
-		path := filepath.Join(dir, fmt.Sprintf("test.db?_busy_timeout=%d", timeout))
+		fs := registries[i].FS()
+		uri := connection.EncodeURI("test.db", fs.Name(), fmt.Sprintf("_busy_timeout=%d", timeout))
 
-		conn1, err := connection.OpenLeader(path, methods[i])
+		conn1, err := connection.OpenLeader(uri, methods[i])
 		require.NoError(t, err)
 		methods[i].Registry().ConnLeaderAdd("test.db", conn1)
 
-		conn2, err := connection.OpenLeader(path, methods[i])
+		conn2, err := connection.OpenLeader(uri, methods[i])
 		require.NoError(t, err)
 		methods[i].Registry().ConnLeaderAdd("test.db", conn2)
 
 		conns[id] = [2]*sqlite3.SQLiteConn{conn1, conn2}
+
+		cleanups = append(cleanups, func() {
+			require.NoError(t, conn2.Close())
+			require.NoError(t, conn1.Close())
+		})
 	}
 
 	options := defaultClusterOptions()
@@ -1742,11 +1745,11 @@ func newCluster(t *testing.T, opts ...clusterOption) (clusterConns, *rafttest.Co
 	}
 
 	args := &clusterTweakArgs{
-		Dirs:    dirs,
-		FSMs:    fsms,
-		Control: control,
-		Methods: methods,
-		Conns:   conns,
+		Registries: registries,
+		FSMs:       fsms,
+		Control:    control,
+		Methods:    methods,
+		Conns:      conns,
 	}
 
 	for _, f := range options.SetupFuncs {
@@ -1754,17 +1757,12 @@ func newCluster(t *testing.T, opts ...clusterOption) (clusterConns, *rafttest.Co
 	}
 
 	cleanup := func() {
-		for i := range conns {
-			require.NoError(t, conns[i][0].Close())
-			require.NoError(t, conns[i][1].Close())
-		}
-		control.Close()
 		if !t.Failed() {
 			for _, f := range options.CleanupFuncs {
 				f(t, args)
 			}
 		}
-		for i := range cleanups {
+		for i := len(cleanups) - 1; i >= 0; i-- {
 			cleanups[i]()
 		}
 	}
@@ -1780,11 +1778,11 @@ type clusterTweakFunc func(*testing.T, *clusterTweakArgs)
 
 // Hold objects to pass to cluster tweak functions.
 type clusterTweakArgs struct {
-	Dirs    []string
-	FSMs    []raft.FSM
-	Control *rafttest.Control
-	Methods []*replication.Methods
-	Conns   clusterConns
+	Registries []*registry.Registry
+	FSMs       []raft.FSM
+	Control    *rafttest.Control
+	Methods    []*replication.Methods
+	Conns      clusterConns
 }
 
 // Expose various internal cluster parameters that tests can tweak with
@@ -1816,9 +1814,14 @@ func assertEqualDatabaseFiles(o *clusterOptions) {
 			checkpointDatabase(t, fsm)
 		}
 
-		data1 := readDatabaseFile(t, args.Dirs[0])
-		data2 := readDatabaseFile(t, args.Dirs[1])
-		data3 := readDatabaseFile(t, args.Dirs[2])
+		data1, err := args.Registries[0].FS().ReadFile("test.db")
+		require.NoError(t, err)
+
+		data2, err := args.Registries[1].FS().ReadFile("test.db")
+		require.NoError(t, err)
+
+		data3, err := args.Registries[1].FS().ReadFile("test.db")
+		require.NoError(t, err)
 
 		assert.Equal(t, data1, data2)
 		assert.Equal(t, data1, data3)
@@ -1851,14 +1854,4 @@ func checkpointDatabase(t *testing.T, fsm raft.FSM) {
 	require.NoError(t, err)
 	log := &raft.Log{Data: data}
 	fsm.Apply(log)
-}
-
-// Read the test database file in the given directory.
-func readDatabaseFile(t *testing.T, dir string) []byte {
-	t.Helper()
-
-	path := filepath.Join(dir, "test.db")
-	data, err := ioutil.ReadFile(path)
-	require.NoError(t, err)
-	return data
 }

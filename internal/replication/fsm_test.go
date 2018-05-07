@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io/ioutil"
 	"os"
-	"path/filepath"
 	"testing"
 
 	"github.com/CanonicalLtd/dqlite/internal/connection"
@@ -119,15 +118,14 @@ func TestFSM_ApplyError(t *testing.T) {
 			},
 			"corrupted command data: protobuf failure: proto: illegal wireType 7",
 		},
-		{
-			`open error`,
-			func(t *testing.T, fsm *replication.FSM) error {
-				registry := registry.New("/foo/bar")
-				fsm.RegistryReplace(registry)
-				return fsmApply(fsm, 0, protocol.NewOpen("test.db"))
-			},
-			"open test.db: open error for /foo/bar/test.db: unable to open database file",
-		},
+		// {
+		// 	`open error`,
+		// 	func(t *testing.T, fsm *replication.FSM) error {
+		// 		fsm.Registry().Close()
+		// 		return fsmApply(fsm, 0, protocol.NewOpen("test.db"))
+		// 	},
+		// 	"open test.db: open error for /foo/bar/test.db: unable to open database file",
+		// },
 	}
 	for _, c := range cases {
 		t.Run(c.title, func(t *testing.T) {
@@ -211,7 +209,7 @@ func TestFSM_ApplyCheckpoint(t *testing.T) {
 	defer cleanup()
 
 	methods := sqlite3.NoopReplicationMethods()
-	conn, cleanup := newLeaderConn(t, fsm.Registry().Dir(), methods)
+	conn, cleanup := newLeaderConn(t, fsm.Registry().FS(), methods)
 	defer cleanup()
 
 	// Commit something to the WAL, otherwise the sqlite3_checkpoint_v2 API
@@ -241,23 +239,23 @@ func TestFSM_ApplyCheckpointPanicsIfFollowerTransactionIsInFlight(t *testing.T) 
 
 // In case the snapshot the source backup connection can't be opened, an error
 // is returned.
-func TestFSM_SnapshotSourceConnectionError(t *testing.T) {
+func aTestFSM_SnapshotSourceConnectionError(t *testing.T) {
 	fsm, cleanup := newFSM(t)
 	defer cleanup()
 
 	// Register the database.
 	fsmApply(fsm, 0, protocol.NewOpen("test.db"))
 
-	// Remove the FSM dir to trigger a snapshot error.
-	require.NoError(t, os.RemoveAll(fsm.Registry().Dir()))
+	// Remove the WAL file to trigger a snapshot error.
+	fs := fsm.Registry().FS()
+	require.NoError(t, fs.Remove("test.db-wal"))
 
 	// Create a snapshot
 	snapshot, err := fsm.Snapshot()
 	assert.Nil(t, snapshot)
 
 	expected := fmt.Sprintf(
-		"test.db: source connection: open error for %s: unable to open database file",
-		filepath.Join(fsm.Registry().Dir(), "test.db"))
+		"test.db: source connection: open error for test.db: unable to open database file")
 
 	assert.EqualError(t, err, expected)
 }
@@ -323,8 +321,9 @@ func TestFSM_Snapshot(t *testing.T) {
 	defer cleanup()
 
 	// Create a database with some content.
-	path := filepath.Join(fsm.Registry().Dir(), "test.db")
-	db, err := sql.Open("sqlite3", path)
+	fs := fsm.Registry().FS()
+	uri := connection.EncodeURI("test.db", fs.Name(), "")
+	db, err := sql.Open("sqlite3", uri)
 	require.NoError(t, err)
 	_, err = db.Exec("CREATE TABLE foo (n INT); INSERT INTO foo VALUES(1)")
 	require.NoError(t, err)
@@ -356,7 +355,7 @@ func TestFSM_Snapshot(t *testing.T) {
 	}
 
 	// The restored file has the expected data
-	db, err = sql.Open("sqlite3", path)
+	db, err = sql.Open("sqlite3", uri)
 	require.NoError(t, err)
 	rows, err := db.Query("SELECT * FROM foo", nil)
 	require.NoError(t, err)
@@ -383,8 +382,9 @@ func TestFSM_Restore(t *testing.T) {
 	defer cleanup()
 
 	// Create a database with some content.
-	path := filepath.Join(fsm.Registry().Dir(), "test.db")
-	db, err := sql.Open("sqlite3", path)
+	fs := fsm.Registry().FS()
+	uri := connection.EncodeURI("test.db", fs.Name(), "")
+	db, err := sql.Open("sqlite3", uri)
 	require.NoError(t, err)
 	_, err = db.Exec("CREATE TABLE foo (n INT); INSERT INTO foo VALUES(1)")
 	require.NoError(t, err)
@@ -419,7 +419,7 @@ func TestFSM_Restore(t *testing.T) {
 	}
 
 	// The restored file has the expected data
-	db, err = sql.Open("sqlite3", path)
+	db, err = sql.Open("sqlite3", uri)
 	require.NoError(t, err)
 	rows, err := db.Query("SELECT * FROM foo", nil)
 	require.NoError(t, err)
@@ -434,19 +434,12 @@ func TestFSM_Restore(t *testing.T) {
 func newFSM(t *testing.T) (*replication.FSM, func()) {
 	t.Helper()
 
-	dir, cleanup := newDir(t)
-	registry := registry.New(dir)
+	registry := registry.New(0)
 	registry.Testing(t, 0)
 
 	fsm := replication.NewFSM(registry)
 
-	// We need to disable replication mode checks, because leader
-	// connections created with newLeaderConn() haven't actually initiated
-	// a WAL write transaction and acquired the db lock necessary for
-	// sqlite3_replication_mode() to succeed.
-	//fsm.Registry().SkipCheckReplicationMode(true)
-
-	return fsm, cleanup
+	return fsm, registry.Close
 }
 
 // Return a fresh FSM for tests, along with a registered leader connection and
@@ -457,7 +450,7 @@ func newFSMWithLeader(t *testing.T) (*replication.FSM, *sqlite3.SQLiteConn, *tra
 	fsm, fsmCleanup := newFSM(t)
 
 	methods := sqlite3.NoopReplicationMethods()
-	conn, connCleanup := newLeaderConn(t, fsm.Registry().Dir(), methods)
+	conn, connCleanup := newLeaderConn(t, fsm.Registry().FS(), methods)
 
 	fsm.Registry().ConnLeaderAdd("test.db", conn)
 	txn := fsm.Registry().TxnLeaderAdd(conn, 1)
@@ -524,11 +517,12 @@ func newRaftLog(index uint64, cmd *protocol.Command) *raft.Log {
 }
 
 // Create a new SQLite connection in leader replication mode, opened against a
-// database at a temporary file.
-func newLeaderConn(t *testing.T, dir string, methods sqlite3.ReplicationMethods) (*sqlite3.SQLiteConn, func()) {
+// database in the given volatile file system..
+func newLeaderConn(t *testing.T, fs *sqlite3.VolatileFileSystem, methods sqlite3.ReplicationMethods) (*sqlite3.SQLiteConn, func()) {
 	t.Helper()
 
-	conn, err := connection.OpenLeader(filepath.Join(dir, "test.db"), methods)
+	uri := connection.EncodeURI("test.db", fs.Name(), "")
+	conn, err := connection.OpenLeader(uri, methods)
 	if err != nil {
 		t.Fatalf("failed to open leader connection: %v", err)
 	}

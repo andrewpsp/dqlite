@@ -16,8 +16,8 @@ func ExampleURI() {
 	// Output:
 	// test.db
 	// mode=rw
-	// test.db?mode=rw
+	// file:test.db?vfs=volatile&mode=rw
 	fmt.Println(filename)
 	fmt.Println(query)
-	fmt.Println(connection.EncodeURI(filename, query))
+	fmt.Println(connection.EncodeURI(filename, "volatile", query))
 }

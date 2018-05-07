@@ -15,11 +15,12 @@ import (
 
 // Open a connection in leader replication mode.
 func TestOpenLeader(t *testing.T) {
-	dir, cleanup := newDir()
-	defer cleanup()
+	fs := sqlite3.RegisterVolatileFileSystem("volatile")
+	defer sqlite3.UnregisterVolatileFileSystem(fs)
 
+	uri := connection.EncodeURI("test.db", fs.Name(), "")
 	methods := sqlite3.NoopReplicationMethods()
-	conn, err := connection.OpenLeader(filepath.Join(dir, "test.db"), methods)
+	conn, err := connection.OpenLeader(uri, methods)
 	require.NoError(t, err)
 	require.NotNil(t, conn)
 
@@ -29,19 +30,23 @@ func TestOpenLeader(t *testing.T) {
 	require.NoError(t, err)
 
 	// The journal mode is set to WAL.
-	_, err = os.Stat(filepath.Join(dir, "test.db-shm"))
-	require.NoError(t, err)
+	dir, cleanup := newDir()
+	defer cleanup()
+
+	require.NoError(t, fs.Dump(dir))
 
 	info, err := os.Stat(filepath.Join(dir, "test.db-wal"))
-	require.NotEqual(t, int64(0), info.Size())
+	require.NoError(t, err)
+	assert.NotEqual(t, int64(0), info.Size())
 }
 
 // Open a connection in follower replication mode.
 func TestOpenFollower(t *testing.T) {
-	dir, cleanup := newDir()
-	defer cleanup()
+	fs := sqlite3.RegisterVolatileFileSystem("volatile")
+	defer sqlite3.UnregisterVolatileFileSystem(fs)
 
-	conn, err := connection.OpenFollower(filepath.Join(dir, "test.db"))
+	uri := connection.EncodeURI("test.db", fs.Name(), "")
+	conn, err := connection.OpenFollower(uri)
 	require.NoError(t, err)
 	require.NotNil(t, conn)
 

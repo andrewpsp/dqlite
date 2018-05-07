@@ -1,6 +1,8 @@
 package dqlite
 
 import (
+	"math/rand"
+
 	"github.com/CanonicalLtd/dqlite/internal/registry"
 )
 
@@ -9,9 +11,10 @@ type Registry registry.Registry
 
 // NewRegistry creates a new Registry, which is expected to be passed to both
 // NewFSM and NewDriver.
-//
-// The dir parameter is the directory where dqlite will store the underlying
-// SQLite database files.
 func NewRegistry(dir string) *Registry {
-	return (*Registry)(registry.New(dir))
+	// Create a random ID for the volatile file system, mainly to avoid
+	// collisions in unit tests.
+	id := rand.Int()
+
+	return (*Registry)(registry.New(id))
 }

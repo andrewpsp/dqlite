@@ -73,6 +73,7 @@ func TestParseURI_Invalid(t *testing.T) {
 	cases := map[string]string{
 		":memory:":            "can't replicate a memory database",
 		"test.db?mode=memory": "can't replicate a memory database",
+		"test.db?vfs=unix":    "vfs parameter not supported",
 		"test.db?%gh&%ij":     "invalid URL escape \"%gh\"",
 		"file:///test.db":     "directory segments are invalid",
 		"/foo/test.db":        "directory segments are invalid",
@@ -93,9 +94,9 @@ func TestParseURI_Invalid(t *testing.T) {
 
 func TestDSN_Encode(t *testing.T) {
 	cases := map[string]string{
-		"test.db":        "test.db",
-		"test.db?mode=r": "test.db?mode=r",
-		"file:test.db":   "test.db",
+		"test.db":        "file:test.db?vfs=volatile",
+		"test.db?mode=r": "file:test.db?vfs=volatile&mode=r",
+		"file:test.db":   "file:test.db?vfs=volatile",
 	}
 	for uri, expected := range cases {
 		t.Run(uri, func(t *testing.T) {
@@ -103,7 +104,7 @@ func TestDSN_Encode(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			got := connection.EncodeURI(filename, query)
+			got := connection.EncodeURI(filename, "volatile", query)
 			if got != expected {
 				t.Fatalf("EncodeURI() should have returned %s, got %s instead", expected, got)
 			}

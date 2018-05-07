@@ -20,7 +20,6 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
-	"path/filepath"
 
 	"github.com/CanonicalLtd/dqlite/internal/connection"
 	"github.com/CanonicalLtd/dqlite/internal/protocol"
@@ -141,7 +140,8 @@ func (f *FSM) applyOpen(tracer *trace.Tracer, params *protocol.Open) error {
 	)
 	tracer.Message("start")
 
-	conn, err := connection.OpenFollower(filepath.Join(f.registry.Dir(), params.Name))
+	uri := connection.EncodeURI(params.Name, f.registry.FS().Name(), "")
+	conn, err := connection.OpenFollower(uri)
 	if err != nil {
 		return err
 	}
@@ -497,7 +497,7 @@ func (f *FSM) snapshotDatabase(tracer *trace.Tracer, filename string) (*fsmDatab
 		}
 	}
 
-	database, wal, err := connection.Snapshot(filepath.Join(f.registry.Dir(), filename))
+	database, wal, err := connection.Snapshot(f.registry.FS(), filename)
 	if err != nil {
 		return nil, err
 	}
@@ -587,17 +587,20 @@ func (f *FSM) restoreDatabase(tracer *trace.Tracer, reader io.ReadCloser) (bool,
 	filename = filename[:len(filename)-1] // Strip the trailing 0
 	tracer.Message("filename: %s", filename)
 
-	// XXX TODO: reason about this situation, is it harmful?
-	// Check that there are no leader connections for this database.
+	// Check that there are no leader connections for this database. If
+	// there are, close them, because their WAL index would be corrupted
+	// otherwise.
 	//
-	// FIXME: we should relax this, as it prevents restoring snapshots "on
-	// the fly".
-	// conns := f.registry.ConnLeaders(filename)
-	// if len(conns) > 0 {
-	// 	tracer.Panic("found %d leader connections", len(conns))
-	// }
+	// TODO: find a way to notify clients about this situation. They should
+	// automatically re-open the connection.
+	for _, conn := range f.registry.ConnLeaders(filename) {
+		tracer.Message("close leader: %s (%d)", filename, f.registry.ConnSerial(conn))
+		if err := conn.Close(); err != nil {
+			return false, errors.Wrap(err, "failed to close leader connection")
+		}
+	}
 
-	// XXX TODO: reason about this situation, is it possible?
+	// TODO: reason about this situation, is it possible?
 	//txn := f.transactions.GetByConn(f.connections.Follower(name))
 	//if txn != nil {
 	//	f.logger.Printf("[WARN] dqlite: fsm: closing follower in-flight transaction %s", txn)
@@ -611,7 +614,7 @@ func (f *FSM) restoreDatabase(tracer *trace.Tracer, reader io.ReadCloser) (bool,
 		follower := f.registry.ConnFollower(filename)
 		f.registry.ConnFollowerDel(filename)
 		if err := follower.Close(); err != nil {
-			return false, err
+			return false, errors.Wrap(err, "failed to close follower connection")
 		}
 	}
 
@@ -626,13 +629,14 @@ func (f *FSM) restoreDatabase(tracer *trace.Tracer, reader io.ReadCloser) (bool,
 	}
 	tracer.Message("transaction ID: %s", txid)
 
-	path := filepath.Join(f.registry.Dir(), filename)
-	if err := connection.Restore(path, data, wal); err != nil {
+	fs := f.registry.FS()
+	if err := connection.Restore(fs, filename, data, wal); err != nil {
 		return false, err
 	}
 
 	tracer.Message("open follower: %s", filename)
-	conn, err := connection.OpenFollower(path)
+	uri := connection.EncodeURI(filename, f.registry.FS().Name(), "")
+	conn, err := connection.OpenFollower(uri)
 	if err != nil {
 		return false, err
 	}

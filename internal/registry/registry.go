@@ -27,8 +27,6 @@ import (
 
 // Registry is a dqlite node-level data structure that tracks:
 //
-// - The directory where dqlite data for this node lives.
-//
 // - All SQLite connections opened on the node, either in leader replication
 //   mode or follower replication mode.
 //
@@ -46,7 +44,7 @@ import (
 // performed after acquiring the lock. See Lock() and Unlock().
 type Registry struct {
 	mu        sync.Mutex                     // Serialize access to internal state.
-	dir       string                         // Node data directory
+	fs        *sqlite3.VolatileFileSystem    // Database files are be stored in this in-memory FS.
 	leaders   map[*sqlite3.SQLiteConn]string // Map leader connections to database filenames.
 	followers map[string]*sqlite3.SQLiteConn // Map database filenames to follower connections.
 	txns      map[uint64]*transaction.Txn    // Transactions by ID
@@ -80,10 +78,7 @@ type Registry struct {
 }
 
 // New creates a new registry.
-//
-// The 'dir' parameter sets the directory where the node associated with this
-// registry will save the SQLite database files.
-func New(dir string) *Registry {
+func New(id int) *Registry {
 	tracers := trace.NewSet(250)
 
 	// Register the is the tracer that will be used by the FSM associated
@@ -91,7 +86,7 @@ func New(dir string) *Registry {
 	tracers.Add("fsm")
 
 	return &Registry{
-		dir:        dir,
+		fs:         sqlite3.RegisterVolatileFileSystem(fmt.Sprintf("volatile-%d", id)),
 		leaders:    map[*sqlite3.SQLiteConn]string{},
 		followers:  map[string]*sqlite3.SQLiteConn{},
 		txns:       map[uint64]*transaction.Txn{},
@@ -102,6 +97,19 @@ func New(dir string) *Registry {
 	}
 }
 
+// Close the registry, releasing allocated resources.
+func (r *Registry) Close() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	sqlite3.UnregisterVolatileFileSystem(r.fs)
+}
+
+// FS returns the underlying volatile file system.
+func (r *Registry) FS() *sqlite3.VolatileFileSystem {
+	return r.fs
+}
+
 // Lock the registry.
 func (r *Registry) Lock() {
 	r.mu.Lock()
@@ -110,11 +118,6 @@ func (r *Registry) Lock() {
 // Unlock the registry.
 func (r *Registry) Unlock() {
 	r.mu.Unlock()
-}
-
-// Dir is the directory where replicated SQLite files are stored.
-func (r *Registry) Dir() string {
-	return r.dir
 }
 
 // Testing sets up this registry for unit-testing.

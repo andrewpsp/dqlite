@@ -141,6 +141,10 @@ func TestRegistry_SyncHook_LeadershipLost(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("simulated FSM log command execution did not resume")
 	}
+
+	// Mimick an FSM getting unblocked, finishing applying the new log
+	// command and finally releasing the lock.
+	registry.Unlock()
 }
 
 // Test that when the FSM of a leader raft instance applies a command that was

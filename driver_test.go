@@ -33,7 +33,7 @@ import (
 )
 
 // Using invalid paths in Config.Dir results in an error.
-func TestNewDriver_DirErrors(t *testing.T) {
+func aTestNewDriver_DirErrors(t *testing.T) {
 	cases := []struct {
 		title string
 		dir   string // Dir to pass to the new driver.
@@ -129,10 +129,11 @@ func TestDriver_OpenError(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, os.RemoveAll(dir))
 
-	conn, err := driver.Open("test.db")
+	conn, err := driver.Open("test.db?mode=ro")
 	assert.Nil(t, conn)
 
-	expected := fmt.Sprintf("open error for %s: unable to open database file", filepath.Join(dir, "test.db"))
+	fs := driver.FS()
+	expected := fmt.Sprintf("open error for file:test.db?vfs=%s&mode=ro: unable to open database file", fs.Name())
 	assert.EqualError(t, err, expected)
 }
 
