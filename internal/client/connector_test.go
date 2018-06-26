@@ -2,7 +2,6 @@ package client_test
 
 import (
 	"context"
-	"fmt"
 	"io/ioutil"
 	"net"
 	"os"
@@ -279,9 +278,6 @@ func newServer(t *testing.T, index int, listener net.Listener, cluster bindings.
 	server, err := bindings.NewServer(file, cluster)
 	require.NoError(t, err)
 
-	err = server.ConfigVfs(fmt.Sprintf("volatile-%d", index))
-	require.NoError(t, err)
-
 	runCh := make(chan error)
 	go func() {
 		err := server.Run()
@@ -376,6 +372,10 @@ type testCluster struct {
 
 func newTestCluster() *testCluster {
 	return &testCluster{}
+}
+
+func (c *testCluster) Replication() string {
+	return "test"
 }
 
 func (c *testCluster) Leader() string {

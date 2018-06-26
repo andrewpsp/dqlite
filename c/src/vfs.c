@@ -8,8 +8,6 @@
 
 #include <sqlite3.h>
 
-#include "vfs.h"
-
 /* Maximum pathname length supported by this VFS. */
 #define DQLITE__VFS_MAX_PATHNAME 512
 
@@ -1422,7 +1420,7 @@ static int dqlite__vfs_get_last_error(sqlite3_vfs *vfs, int NotUsed2, char *NotU
 	return rc;
 }
 
-int dqlite__vfs_register(const char *name, sqlite3_vfs **out) {
+int dqlite_vfs_register(const char *name, sqlite3_vfs **out) {
 	sqlite3_vfs* vfs;
 	struct dqlite__vfs_root *root;
 	int err;
@@ -1474,7 +1472,7 @@ int dqlite__vfs_register(const char *name, sqlite3_vfs **out) {
 	return SQLITE_OK;
 }
 
-void dqlite__vfs_unregister(sqlite3_vfs* vfs) {
+void dqlite_vfs_unregister(sqlite3_vfs* vfs) {
 	struct dqlite__vfs_root *root;
 
 	assert(vfs != NULL);
